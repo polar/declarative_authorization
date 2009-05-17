@@ -3,6 +3,8 @@ if Authorization::activate_authorization_rules_browser?
 require File.join(File.dirname(__FILE__), %w{.. .. lib declarative_authorization maintenance})
 
 class AuthorizationUsagesController < ApplicationController
+  unloadable
+  
   helper :authorization_rules
   filter_access_to :all, :require => :read
   # TODO set context?
@@ -17,6 +19,6 @@ class AuthorizationUsagesController < ApplicationController
 end
 else
 
-class AuthorizationUsagesController < ApplicationController
-end
+else
+class AuthorizationUsagesController < ApplicationController; end
 end # activate_authorization_rules_browser?

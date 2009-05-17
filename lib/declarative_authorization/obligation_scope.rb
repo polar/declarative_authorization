@@ -48,7 +48,7 @@ module Authorization
       @current_obligation = obligation
       obligation_conditions[@current_obligation] ||= {}
       follow_path( obligation )
-      
+
       rebuild_condition_options!
       rebuild_join_options!
     end
@@ -133,7 +133,7 @@ module Authorization
         parent.reflect_on_association( path.last )
       end
       raise "invalid path #{path.inspect}" if reflection.nil?
-      
+
       reflections[path] = reflection
       map_table_alias_for( path )  # Claim a table alias for the path.
       
@@ -208,17 +208,15 @@ module Authorization
             end
             bindvar = "#{attribute_table_alias}__#{attribute_name}_#{obligation_index}".to_sym
 
-            attribute_value = value.respond_to?( :descends_from_active_record? ) && value.descends_from_active_record? && value.id ||
-                              value.is_a?( Array ) && value[0].respond_to?( :descends_from_active_record? ) && value[0].descends_from_active_record? && value.map( &:id ) ||
-                              value
             attribute_operator = case operator
                                  when :contains, :is             then "= :#{bindvar}"
                                  when :does_not_contain, :is_not then "<> :#{bindvar}"
-                                 when :is_in                     then "IN (:#{bindvar})"
+                                 when :is_in, :intersects_with   then "IN (:#{bindvar})"
                                  when :is_not_in                 then "NOT IN (:#{bindvar})"
+                                 else raise AuthorizationUsageError, "Unknown operator: #{operator}"
                                  end
             obligation_conds << "#{connection.quote_table_name(attribute_table_alias)}.#{connection.quote_table_name(attribute_name)} #{attribute_operator}"
-            binds[bindvar] = attribute_value
+            binds[bindvar] = attribute_value(value)
           end
         end
         obligation_conds << "1=1" if obligation_conds.empty?
@@ -227,29 +225,33 @@ module Authorization
       (delete_paths - used_paths).each {|path| reflections.delete(path)}
       @proxy_options[:conditions] = [ conds.join( " OR " ), binds ]
     end
+
+    def attribute_value (value)
+      value.respond_to?( :descends_from_active_record? ) && value.descends_from_active_record? && value.id ||
+        value.is_a?( Array ) && value[0].respond_to?( :descends_from_active_record? ) && value[0].descends_from_active_record? && value.map( &:id ) ||
+        value
+    end
     
     # Parses all of the defined obligation joins and defines the scope's :joins or :includes option.
     # TODO: Support non-linear association paths.  Right now, we just break down the longest path parsed.
     def rebuild_join_options!
-      joins = @proxy_options[:joins] || []
+      joins = (@proxy_options[:joins] || []) + (@proxy_options[:includes] || [])
 
-      reflections.keys.reverse.each do |path|
+      reflections.keys.each do |path|
         next if path.empty?
-        
-        existing_join = joins.find do |join|
-          join.is_a?(Symbol) ? (join == path.first) : join.key?(path.first)
-        end
-        path_join = path_to_join(path)
 
-        case [existing_join.class, path_join.class]
-        when [Symbol, Hash]
-          joins.delete(existing_join)
-          joins << path_join
-        when [Hash, Hash]
-          joins.delete(existing_join)
-          joins << path_join.deep_merge(existing_join)
-        when [NilClass, Hash], [NilClass, Symbol]
-          joins << path_join
+        existing_join = joins.find do |join|
+          existing_path = join_to_path(join)
+          min_length = [existing_path.length, path.length].min
+          existing_path.first(min_length) == path.first(min_length)
+        end
+
+        if existing_join
+          if join_to_path(existing_join).length < path.length
+            joins[joins.index(existing_join)] = path_to_join(path)
+          end
+        else
+          joins << path_to_join(path)
         end
       end
 
@@ -275,6 +277,15 @@ module Authorization
           hash = { elem => hash }
         end
         hash
+      end
+    end
+
+    def join_to_path (join)
+      case join
+      when Symbol
+        [join]
+      when Hash
+        [join.keys.first] + join_to_path(join[join.keys.first])
       end
     end
   end
